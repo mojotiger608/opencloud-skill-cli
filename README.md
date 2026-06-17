@@ -1,99 +1,167 @@
 # opencloud-skill-cli
 
-An [OpenCloud](https://opencloud.eu) CLI application that can be used by local AI assistants and agents via skills. It allows AI to interact with OpenCloud resources using the [LibreGraph API](https://github.com/opencloud-eu/libre-graph-api).
+CLI for OpenCloud's LibreGraph API. Upload files (auto PUT → TUS fallback), manage drives, files, folders, users, groups, permissions, shares.
 
-### Features
-
-- Seamless integration with local AI assistants and agents via skills.
-- Efficient agent token usage thanks to TOON and skill reference data.
-- Fetching and managing OpenCloud resources.
-- Authentication with OpenCloud using OIDC.
-- Single binary application for easy installation and usage.
-
-## Getting started
-
-### Install CLI
+## Quick Start
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/JammingBen/opencloud-skill-cli/main/install.sh | bash
+go build -o bin/oc-cli ./cmd/oc-cli/
+oc-cli login --server-url https://<your-server>[:port]
+oc-cli upload file.pdf
+oc-cli api -p /v1.0/me/drive
 ```
 
-Or build from source:
+## Auth
 
-```sh
-git clone git@github.com:JammingBen/opencloud-skill-cli.git
-make install
+`oc-cli login` uses OIDC PKCE. Config saved at `~/.config/opencloud-cli/config.json` (0600):
+
+```json
+{
+  "server_url": "https://your.server:9200",
+  "insecure": true,
+  "token": {...},
+  "client_id": "web",
+  "token_endpoint": "https://your.server:9200/konnect/v1/token"
+}
 ```
 
-### Login
+Optional fields for connecting to an IP while presenting a hostname:
 
-You need to login to your OpenCloud server to use the CLI or the skill. You can do this using the `login` command:
-
-```sh
-oc-cli login -s https://your-opencloud-server.com
+```json
+{
+  "host": "your.domain.com",
+  "ip": "192.168.1.10"
+}
 ```
 
-This will store the token in a config file in your user directory. If you don't want the token to be stored, you can use the `OC_ACCESS_TOKEN` env variable to provide the token directly.
+Set these once via `oc-cli login --host H --ip X --insecure`. All subsequent commands use them automatically.
+
+## Upload Behavior
+
+**Auto-fallback**: WebDAV PUT is tried first. If it fails (HTTP 413, 500, or connection error), the upload automatically falls back to TUS chunked upload.
 
 ```sh
-oc-cli login -s https://your-opencloud-server.com --clipboard
-export OC_ACCESS_TOKEN=paste-your-token
-# run your agent or assistant that uses the skill
+oc-cli upload file.pdf              # PUT first, TUS fallback on failure
+oc-cli upload large.iso             # auto
+oc-cli upload huge.bin --chunk-size 16777216  # custom chunk
 ```
 
-When working with a local server that uses self-signed certificates, you can use the `--insecure` flag to skip TLS verification:
+## Test Environment
+
+For integration tests against a live OpenCloud server:
 
 ```sh
-oc-cli login -s https://host.docker.internal:9200 --insecure
+export OC_TEST_SERVER_URL="https://your.server:9200"
+export OC_TEST_USER="admin"
+export OC_TEST_PASS="password"
+export OC_TEST_INSECURE="true"
+# Optional: for IP-with-hostname setups
+export OC_TEST_HOST="cloud.your.domain"
+export OC_TEST_IP="192.168.1.10"
 ```
 
-### Install Skill
+Tests auto-create and delete data — no server clutter.
 
-Install the skill so your local AI assistant or agent can use it to interact with OpenCloud. You can use the provided `install-skill` command, or download and install the skill manually from this repository.
+## Build & Test
 
 ```sh
-oc-cli install-skill --agent=claude-code
-oc-cli install-skill --agent=github-copilot
-oc-cli install-skill --agent=codex
-oc-cli install-skill --agent=open-code
-oc-cli install-skill --agent=gemini-cli
+# Requires Go 1.23+
+go build -o bin/oc-cli ./cmd/oc-cli/
+
+# Unit tests (192 tests, mock server — no auth/server needed)
+go test -v ./internal/client/
+
+# Fuzz tests (10 suites)
+for f in ChunkSizes Offsets Filenames JSONBodies PathParams \
+         TUSOffsets HTTPMethods UploadChunks HTTPStatuses MimeTypes; do
+  go test -run='^$' -fuzz="^Fuzz$f$" -fuzztime=30s ./internal/client/
+done
 ```
 
-## Example prompts
+## Commands
 
-- List all my project spaces.
-- List all members of project space "foo".
-- Add Dennis Ritchie as manager to project space "foo".
-- List all files in the root of my personal space.
+| Command | Purpose |
+|---------|---------|
+| `login` | OIDC auth, saves config (server, host, ip, insecure) |
+| `logout` | Clear all config |
+| `upload` | Auto PUT → TUS fallback |
+| `api` | Raw LibreGraph API calls |
+| `version` | Build version |
+| `install-skill` | Install agent skill |
 
-## Why not use an MCP server?
+## Upload Flags
 
-The OpenCloud CLI is designed to offer a simple and efficient way for local AI assistants and agents to interact with OpenCloud resources. It does not require the overhead of running an MCP server, and can be easily installed and used on any machine.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--chunk-size` | 5MB | TUS chunk size (used on fallback) |
+| `--name` `-n` | filename | Remote filename |
+| `--mime` `-m` | auto | MIME type |
+| `--drive-info` | false | Show drive (includes host/ip from config) |
+| `--host` | config | Host header override |
+| `--ip` | config | DNS resolution override |
+| `-v` | false | Verbose |
 
-Additionally, skills are usually more efficient than MCP servers in terms of token usage because they don't need to retrieve tool definitions initially. The CLI's skill reference structure as well as the TOON format used for responses allow for efficient retrieval of necessary information.
+## API Flags
 
-## Development
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-p` | (required) | API path |
+| `-m` | GET | HTTP method |
+| `-b` | "" | JSON body |
+| `-q` | [] | Query params (key=value) |
+| `--status-only` | false | Print status only |
+| `--json-format` | false | JSON output (default: TOON) |
+| `--host` | config | Host header |
+| `--ip` | config | DNS resolution |
+| `-v` | false | Verbose |
+
+## Common Setups
+
+### Local Docker (9200)
 
 ```sh
-# install Go dependencies
-make tidy
-
-# login to OpenCloud server
-make login # defaults to https://host.docker.internal:9200
-
-# OR:
-make login SERVER_URL=https://cloud.opencloud.eu # specify own URL
-
-# run cli
-go run cmd/oc-cli/*.go --help
+oc-cli login --server-url https://127.0.0.1:9200 --insecure
 ```
 
-### Generating skill reference data
-
-Skill reference data can be generated using [openapi-to-skills](https://github.com/neutree-ai/openapi-to-skills/tree/main). This will generate markdown files for all resources, operations and schemas defined in the [OpenCloud OpenAPI spec](https://github.com/opencloud-eu/libre-graph-api/blob/main/api/openapi-spec/v1.0.yaml). The generated files will be moved to `skills/opencloud-cli/references`.
-
-Make sure you have `npx` installed.
+### Reverse proxy / Cloudflare Tunnel (443)
 
 ```sh
-make generate-skill-references
+oc-cli login --server-url https://your.domain.com
+```
+
+### IP + hostname (LAN)
+
+```sh
+oc-cli login --server-url https://192.168.1.10:9200 \
+  --host your.domain.com --ip 192.168.1.10 --insecure
+```
+
+## Architecture
+
+```
+internal/client/
+├── client.go       # HTTP client: Host/IP override, OAuth2, shared transport
+├── encoder.go      # TOON/JSON response encoding
+├── upload.go       # Upload (PUT → TUS fallback), GetPersonalDrive
+├── helpers_test.go # Shared test infrastructure
+├── mock_test.go    # Mock handlers + unified mux router (all 68 endpoints)
+├── upload_test.go  (27 tests)   upload_test.go
+├── drives_test.go  (12 tests)   drives_test.go
+├── files_test.go   (14 tests)   files_test.go
+├── permissions_test.go (18)     permissions_test.go
+├── users_test.go   (21 tests)   users_test.go
+├── tags_test.go    (17 tests)   tags_test.go
+├── errors_test.go  (28 tests)   errors_test.go
+└── fuzz_test.go    (13 + 10 fuzz)
+
+cmd/oc-cli/
+├── main.go         # CLI root with categorized help
+├── login.go        # OIDC login, saves host/ip to config
+├── logout.go       # Clear config
+├── api.go          # API command, loads host/ip from config
+├── upload.go       # Upload command, auto PUT → TUS
+
+skills/opencloud-cli/
+├── SKILL.md        # Agent skill (TOON format, token-efficient)
+└── references/     # 68 operations from npx openapi-to-skills
 ```

@@ -21,6 +21,8 @@ var (
 	verbose     bool
 	statusOnly  bool
 	jsonFormat  bool
+	apiHost     string
+	apiIP       string
 )
 
 var apiCmd = &cobra.Command{
@@ -28,34 +30,29 @@ var apiCmd = &cobra.Command{
 	Short: "Interact with the OpenCloud LibreGraph API",
 	Long:  "This command allows you to interact with the OpenCloud LibreGraph API.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Set up logging
 		logLvl := slog.LevelInfo
 		if verbose {
 			logLvl = slog.LevelDebug
 		}
 		logger.SetupLogging(logLvl)
 
-		// Load config
 		cfg, err := oidc.LoadConfig()
 		if err != nil {
 			return err
 		}
-
 		if cfg.ServerURL == "" {
-			return fmt.Errorf("Server URL is not configured. Please run 'occ login' first.")
+			return fmt.Errorf("Server URL is not configured. Run 'oc-cli login' first.")
 		}
 
-		// Get the token resource for authentication
 		ctx := context.Background()
 		ts, err := cfg.GetTokenSource(ctx)
 		if err != nil {
 			return err
 		}
 		if ts == nil {
-			return fmt.Errorf("Access token not found. Please run 'occ login' first.")
+			return fmt.Errorf("Access token not found. Run 'oc-cli login' first.")
 		}
 
-		// Parse query params
 		params := url.Values{}
 		for _, qp := range queryParams {
 			parts := strings.SplitN(qp, "=", 2)
@@ -66,27 +63,27 @@ var apiCmd = &cobra.Command{
 			}
 		}
 
-		// Create client and make request to OpenCloud API
 		c := client.NewClient(cfg.ServerURL, cfg.Insecure, ts)
+		// CLI flags override config
+		c.HostOverride = firstNonEmpty(apiHost, cfg.HostOverride)
+		c.ResolveIP = firstNonEmpty(apiIP, cfg.ResolveIP)
+
 		resp, err := c.MakeRequest(path, method, body, params)
 		if err != nil {
 			return fmt.Errorf("error making request: %w", err)
 		}
 
-		// Set up encoder
 		encodingFormat := client.TOON
 		if jsonFormat {
 			encodingFormat = client.JSON
 		}
 		e := client.NewEncoder(encodingFormat)
 
-		// Print output
 		if statusOnly {
 			output, err := e.EncodeStatusCode(resp.StatusCode)
 			if err != nil {
 				return fmt.Errorf("failed to encode status code: %w", err)
 			}
-
 			fmt.Println(output)
 			return nil
 		}
@@ -95,10 +92,14 @@ var apiCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to encode response body: %w", err)
 		}
-
 		fmt.Println(output)
 		return nil
 	},
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" { return a }
+	return b
 }
 
 func init() {
@@ -110,5 +111,7 @@ func init() {
 	apiCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	apiCmd.Flags().BoolVar(&statusOnly, "status-only", false, "Only return the status code")
 	apiCmd.Flags().BoolVar(&jsonFormat, "json-format", false, "Encode the output in JSON format")
+	apiCmd.Flags().StringVar(&apiHost, "host", "", "HTTP Host header (overrides config)")
+	apiCmd.Flags().StringVar(&apiIP, "ip", "", "DNS resolution IP (overrides config)")
 	apiCmd.MarkFlagRequired("path")
 }
